@@ -19,6 +19,19 @@ No for Docker flow — `docker compose` provisions Postgres, and app startup run
 - `prisma db push` (sync schema)
 - seed of static questions on first request
 
+
+## Docker troubleshooting (Windows)
+If you see Prisma build errors like `getaddrinfo EAI_AGAIN binaries.prisma.sh` during `docker compose up --build`:
+- this is typically a transient DNS/network resolution issue to Prisma engine CDN.
+- retry once with no cache:
+```bash
+docker compose build --no-cache
+docker compose up
+```
+- if on corporate VPN/proxy/firewall, allow access to `binaries.prisma.sh`.
+
+If you see `the attribute version is obsolete`, this is harmless in Compose v2 and is already removed from this repo.
+
 ## Local dev without Docker
 1. Start Postgres + Redis locally.
 2. Create `.env.local`:

@@ -1,0 +1,13 @@
+.git
+.gitignore
+node_modules
+.next
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.env*
+demo-video.mp4
+*.mp4
+coverage
+.DS_Store
