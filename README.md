@@ -30,6 +30,17 @@ docker compose up
 ```
 - if on corporate VPN/proxy/firewall, allow access to `binaries.prisma.sh`.
 
+If you see `Temporary failure resolving deb.debian.org` during image build, that is Docker DNS/network resolution in your environment (not app code). This repo now uses an Alpine-based Node image and avoids `apt-get` to reduce that failure mode. If DNS errors persist:
+- restart Docker Desktop
+- disable/reenable VPN and retry
+- set Docker Desktop DNS to `8.8.8.8` / `1.1.1.1`
+- retry:
+```bash
+docker compose build --no-cache
+docker compose up
+```
+
+
 If you see `the attribute version is obsolete`, this is harmless in Compose v2 and is already removed from this repo.
 
 ## Local dev without Docker
