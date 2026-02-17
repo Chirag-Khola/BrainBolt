@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "dev:stack": "node scripts/dev-stack.mjs",
+    "dev:stack:stop": "node scripts/dev-stack-stop.mjs"
   },
   "dependencies": {
     "@prisma/client": "^5.19.1",

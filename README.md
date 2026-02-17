@@ -59,6 +59,22 @@ npm run dev
 ```
 This avoids Docker image build issues while still using the same Postgres/Redis services.
 
+## One-command local launcher (recommended for your setup)
+Run everything with a single command:
+```bash
+npm run dev:stack
+```
+What it does:
+1. starts `postgres` + `redis` via Docker in background
+2. creates `.env.local` automatically if missing
+3. runs `prisma db push`
+4. starts Next.js dev server
+
+To stop the Docker services later:
+```bash
+npm run dev:stack:stop
+```
+
 ## Local dev without Docker
 1. Start Postgres + Redis locally.
 2. Create `.env.local`:
