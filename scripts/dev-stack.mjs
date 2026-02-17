@@ -13,7 +13,7 @@ const run = (cmd, args, options = {}) =>
   });
 
 const cwd = process.cwd();
-const envPath = path.join(cwd, '.env.local');
+const envPath = path.join(cwd, '.env');
 if (!fs.existsSync(envPath)) {
   fs.writeFileSync(
     envPath,
@@ -24,15 +24,13 @@ if (!fs.existsSync(envPath)) {
       ''
     ].join('\n')
   );
-  console.log('Created .env.local with default local values.');
+  console.log('Created .env with default local values.');
 }
-
-const composeCmd = 'docker compose';
 
 (async () => {
   try {
     console.log('\n▶ Starting postgres + redis in background...\n');
-    await run(composeCmd, ['up', '-d', 'postgres', 'redis']);
+    await run('docker compose', ['up', '-d', 'postgres', 'redis']);
 
     console.log('\n▶ Pushing Prisma schema...\n');
     await run('npx', ['prisma', 'db', 'push']);

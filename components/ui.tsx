@@ -4,6 +4,7 @@ export const Card = ({ children }: PropsWithChildren) => (
   <section
     style={{
       background: "var(--color-surface)",
+      border: "1px solid var(--color-border)",
       borderRadius: "var(--radius-lg)",
       boxShadow: "var(--shadow-sm)",
       padding: "var(--space-5)"
@@ -20,11 +21,12 @@ export const Button = ({ children, ...props }: PropsWithChildren<ButtonHTMLAttri
       width: "100%",
       border: "none",
       cursor: "pointer",
-      background: "var(--color-primary)",
+      background: "linear-gradient(135deg, var(--color-primary), #6d61ff)",
       color: "var(--color-primary-contrast)",
       borderRadius: "var(--radius-md)",
       padding: "var(--space-3) var(--space-4)",
-      fontSize: "var(--font-size-2)"
+      fontSize: "var(--font-size-2)",
+      boxShadow: "var(--shadow-md)"
     }}
   >
     {children}

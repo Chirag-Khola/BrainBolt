@@ -66,7 +66,7 @@ npm run dev:stack
 ```
 What it does:
 1. starts `postgres` + `redis` via Docker in background
-2. creates `.env.local` automatically if missing
+2. creates `.env` automatically if missing
 3. runs `prisma db push`
 4. starts Next.js dev server
 
@@ -77,7 +77,7 @@ npm run dev:stack:stop
 
 ## Local dev without Docker
 1. Start Postgres + Redis locally.
-2. Create `.env.local`:
+2. Create `.env`:
 ```bash
 DATABASE_URL="postgresql://brainbolt:brainbolt@localhost:5432/brainbolt?schema=public"
 REDIS_URL="redis://localhost:6379"

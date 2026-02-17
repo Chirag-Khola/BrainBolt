@@ -119,7 +119,7 @@ export default function QuizClient() {
           <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
           <input placeholder="Password (min 8)" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           <Button onClick={() => void submitAuth()}>{authMode === "login" ? "Login" : "Create account"}</Button>
-          <button onClick={() => setAuthMode(authMode === "login" ? "signup" : "login")}>
+          <button className="plain-btn" onClick={() => setAuthMode(authMode === "login" ? "signup" : "login")}>
             {authMode === "login" ? "Need an account? Sign up" : "Have an account? Login"}
           </button>
           <p>{message}</p>
@@ -135,7 +135,7 @@ export default function QuizClient() {
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <p style={{ margin: 0 }}>Signed in as <strong>{user.displayName}</strong></p>
-          <button onClick={() => void logout()}>Logout</button>
+          <button className="plain-btn" onClick={() => void logout()}>Logout</button>
         </div>
       </Card>
       <div className="grid grid-2">
