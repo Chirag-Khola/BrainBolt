@@ -1,15 +1,16 @@
-import { Difficulty, Question } from "@/lib/types";
+import { createHash } from "node:crypto";
 
-const mk = (id: string, difficulty: Difficulty, prompt: string, choices: string[], correctAnswer: string, tags: string[]): Question => ({
+const mk = (id: string, difficulty: number, prompt: string, choices: string[], correctAnswer: string, tags: string[]) => ({
   id,
   difficulty,
   prompt,
   choices,
   correctAnswer,
+  correctAnswerHash: createHash("sha256").update(correctAnswer).digest("hex"),
   tags
 });
 
-export const questions: Question[] = [
+export const questions = [
   mk("q1", 1, "What is 2 + 2?", ["3", "4", "5", "6"], "4", ["math", "arithmetic"]),
   mk("q2", 1, "Which planet is known as the Red Planet?", ["Earth", "Venus", "Mars", "Jupiter"], "Mars", ["science"]),
   mk("q3", 2, "What is the capital of Japan?", ["Seoul", "Tokyo", "Osaka", "Beijing"], "Tokyo", ["geography"]),

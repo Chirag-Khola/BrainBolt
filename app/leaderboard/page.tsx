@@ -6,8 +6,8 @@ async function load() {
     fetch(`${endpoint}/api/v1/leaderboard/streak`, { cache: "no-store" })
   ]);
   return {
-    score: (await scoreRes.json()) as { leaders: Array<{ userId: string; totalScore: number }> },
-    streak: (await streakRes.json()) as { leaders: Array<{ userId: string; maxStreak: number }> }
+    score: (await scoreRes.json()) as { leaders: Array<{ userId: string; totalScore: number; user: { displayName: string } }> },
+    streak: (await streakRes.json()) as { leaders: Array<{ userId: string; maxStreak: number; user: { displayName: string } }> }
   };
 }
 
@@ -18,13 +18,13 @@ export default async function LeaderboardPage() {
       <section>
         <h2>Total Score</h2>
         {data.score.leaders.map((u, i) => (
-          <p key={u.userId}>#{i + 1} {u.userId} - {u.totalScore}</p>
+          <p key={u.userId}>#{i + 1} {u.user.displayName} - {u.totalScore}</p>
         ))}
       </section>
       <section>
         <h2>Max Streak</h2>
         {data.streak.leaders.map((u, i) => (
-          <p key={u.userId}>#{i + 1} {u.userId} - {u.maxStreak}</p>
+          <p key={u.userId}>#{i + 1} {u.user.displayName} - {u.maxStreak}</p>
         ))}
       </section>
     </div>

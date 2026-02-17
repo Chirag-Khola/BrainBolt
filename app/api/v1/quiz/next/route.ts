@@ -1,13 +1,15 @@
+import { requireUser } from "@/lib/auth/session";
 import { nextQuestion } from "@/lib/quizEngine";
 import { checkRateLimit } from "@/lib/rateLimit";
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
-export async function GET(req: NextRequest) {
-  const userId = req.nextUrl.searchParams.get("userId");
-  if (!userId) return NextResponse.json({ error: "userId required" }, { status: 400 });
-  if (!checkRateLimit(`next:${userId}`, 120, 60_000)) {
+export async function GET() {
+  const user = await requireUser();
+  if (!user) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+
+  if (!(await checkRateLimit(`next:${user.id}`, 120, 60_000))) {
     return NextResponse.json({ error: "rate_limit_exceeded" }, { status: 429 });
   }
-  const payload = await nextQuestion(userId);
+  const payload = await nextQuestion(user.id);
   return NextResponse.json(payload);
 }

@@ -1,55 +1,68 @@
 # BrainBolt Low-Level Design
 
 ## Module responsibilities
-- `lib/quizEngine.ts`: adaptive difficulty, scoring, streak decay, idempotency, leaderboard updates.
-- `app/api/v1/quiz/*`: fetch next question, submit answer, read user metrics.
-- `app/api/v1/leaderboard/*`: exposes live score and streak boards.
-- `lib/cache.ts`: Redis cache for user state and question pools.
-- `components/*`: reusable UI primitives and quiz widgets.
+- `lib/quizEngine.ts`: adaptive difficulty, scoring, streak decay, idempotency, and leaderboard/rank queries.
+- `lib/auth/session.ts`: cookie-based session lifecycle.
+- `app/api/v1/auth/*`: signup/login/logout/me.
+- `app/api/v1/quiz/*`: next question, submit answer, user metrics.
+- `app/api/v1/leaderboard/*`: live score/streak leaderboards.
+- `lib/db.ts`: Prisma client singleton.
+- `prisma/schema.prisma`: PostgreSQL schema.
 
-## API Schemas
+## API schemas
+### POST `/v1/auth/signup`
+Request: `email`, `password`, `displayName`
+Response: authenticated `user`
+
+### POST `/v1/auth/login`
+Request: `email`, `password`
+Response: authenticated `user`
+
 ### GET `/v1/quiz/next`
-Request: `userId`, optional `sessionId`
-Response: `questionId`, `difficulty`, `prompt`, `choices`, `sessionId`, `stateVersion`, `currentScore`, `currentStreak`
+Auth required. Response: `questionId`, `difficulty`, `prompt`, `choices`, `sessionId`, `stateVersion`, `currentScore`, `currentStreak`
 
 ### POST `/v1/quiz/answer`
-Request: `userId`, `sessionId`, `questionId`, `answer`, `stateVersion`, `answerIdempotencyKey`
+Auth required. Request: `sessionId`, `questionId`, `answer`, `stateVersion`, `answerIdempotencyKey`
 Response: `correct`, `newDifficulty`, `newStreak`, `scoreDelta`, `totalScore`, `stateVersion`, `leaderboardRankScore`, `leaderboardRankStreak`
 
 ### GET `/v1/quiz/metrics`
-Response: `currentDifficulty`, `streak`, `maxStreak`, `totalScore`, `accuracy`, `difficultyHistogram`, `recentPerformance`
+Auth required. Response: `currentDifficulty`, `streak`, `maxStreak`, `totalScore`, `accuracy`, `difficultyHistogram`, `recentPerformance`
 
-## DB schema + indexes
-- `users(id PK, createdAt)`
-- `questions(id PK, difficulty INDEX, prompt, choices, correctAnswerHash, tags)`
-- `user_state(userId PK, currentDifficulty, streak, maxStreak, totalScore, answeredCount, correctCount, confidence, rolling, stateVersion, lastQuestionId, lastAnswerAt)`
-- `answer_log(id PK, userId INDEX, questionId INDEX, idempotencyKey UNIQUE, difficulty, answer, correct, scoreDelta, streakAtAnswer, answeredAt)`
-- `leaderboard_score(userId PK, totalScore INDEX DESC, updatedAt)`
-- `leaderboard_streak(userId PK, maxStreak INDEX DESC, updatedAt)`
+### GET `/v1/leaderboard/score`
+Response: top users by `totalScore`
 
-## Cache strategy
-- `brainbolt:user:{userId}` TTL 1h for user state.
-- `brainbolt:questions:{difficulty}` TTL 1h for per-difficulty pools.
+### GET `/v1/leaderboard/streak`
+Response: top users by `maxStreak`
+
+## PostgreSQL schema + indexes
+- `User(id PK, email UNIQUE, displayName, passwordHash, createdAt)`
+- `Session(id PK, userId FK, tokenHash UNIQUE, expiresAt)`
+  - indexes: `(userId)`, `(expiresAt)`
+- `Question(id PK, difficulty INDEX, prompt, choices(JSON), correctAnswerHash, tags[])`
+- `UserState(userId PK/FK, currentDifficulty, streak, maxStreak, totalScore, answeredCount, correctCount, stateVersion, confidence, rolling[], lastQuestionId, lastAnswerAt)`
+  - indexes: `totalScore DESC`, `maxStreak DESC`
+- `AnswerLog(id PK, userId FK, questionId FK-logical, difficulty, answer, correct, scoreDelta, streakAtAnswer, answeredAt, idempotencyKey)`
+  - unique: `(userId, idempotencyKey)`
+  - indexes: `(userId, answeredAt DESC)`, `(questionId)`
+
+## Cache strategy (Redis)
+- `brainbolt:user:{userId}` TTL 1h (optional read acceleration of denormalized state).
+- `brainbolt:questions:{difficulty}` TTL 1h.
 - Invalidation:
-  - user state overwritten immediately after each answer (write-through cache).
-  - question pools invalidated on catalog update (or TTL expiry).
-- Real-time correctness:
-  - answer updates state + boards synchronously in one critical section (`withUserLock`).
+  - user cache refreshed after each accepted answer.
+  - question pool cache invalidated by TTL / reseed.
+- Strong correctness source is PostgreSQL transaction.
 
 ## Adaptive algorithm (ping-pong stabilizer)
-Uses **momentum + rolling window + hysteresis**:
+Momentum + rolling window + hysteresis:
 
 ```pseudo
-signal = confidence + rolling_window_score
-if signal >= +1.2: difficulty += 1 and confidence = 0
-if signal <= -1.2: difficulty -= 1 and confidence = 0
+confidence = clamp(0.7 * confidence + (correct ? +1 : -1), -3, +3)
+rolling = last5(correct?) mapped to +/-1
+signal = confidence + avg(rolling)
+if signal >= +1.2: difficulty++ and confidence=0
+if signal <= -1.2: difficulty-- and confidence=0
 ```
-
-Where:
-- `confidence = 0.7 * confidence + (correct ? +1 : -1)`
-- `rolling_window_score = avg(last 5 outcomes mapped to +1/-1)`
-
-This damps rapid alternation and prevents endless 5↔6 oscillation.
 
 ## Scoring
 ```pseudo
@@ -64,16 +77,15 @@ else:
 
 ## Edge case handling
 - Wrong answer resets streak.
-- Inactivity decay: every 5 min idle decreases streak by 1.
-- Idempotent answer submission via `answerIdempotencyKey` dedupe map (no double updates).
-- Difficulty boundaries clamped `[1,10]`.
-- `stateVersion` conflict protected against stale clients.
-- Score never below `0`.
-- Repeating last question avoided when alternative exists.
+- Inactivity decay: every 5 min idle lowers streak by 1.
+- Idempotent submit via unique `(userId, idempotencyKey)`.
+- Difficulty clamped in `[1, 10]`.
+- `stateVersion` conflict blocks stale writes.
+- Score floor at `0`.
+- Avoid repeating previous question when alternatives exist.
 
 ## Leaderboard update strategy
-- On each accepted answer:
-  1. update `user_state`
-  2. update score board entry
-  3. recompute rank when requested
-- Current rank included in answer response.
+- Answer submission runs inside a single PostgreSQL transaction.
+- `UserState.totalScore/maxStreak` update is immediate.
+- Leaderboard query sorts directly on indexed columns.
+- Rank in answer response computed from count of strictly greater scores/streaks.

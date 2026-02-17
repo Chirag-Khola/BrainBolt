@@ -1,0 +1,79 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  displayName  String
+  passwordHash String
+  createdAt    DateTime    @default(now())
+  sessions     Session[]
+  userState    UserState?
+  answerLogs   AnswerLog[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Question {
+  id                String   @id
+  difficulty        Int
+  prompt            String
+  choices           Json
+  correctAnswerHash String
+  tags              String[]
+
+  @@index([difficulty])
+}
+
+model UserState {
+  userId            String   @id
+  currentDifficulty Int
+  streak            Int
+  maxStreak         Int
+  totalScore        Int
+  answeredCount     Int
+  correctCount      Int
+  stateVersion      Int
+  confidence        Float
+  rolling           Boolean[]
+  lastQuestionId    String?
+  lastAnswerAt      DateTime?
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([totalScore(sort: Desc)])
+  @@index([maxStreak(sort: Desc)])
+}
+
+model AnswerLog {
+  id                String   @id @default(cuid())
+  userId            String
+  questionId        String
+  difficulty        Int
+  answer            String
+  correct           Boolean
+  scoreDelta        Int
+  streakAtAnswer    Int
+  answeredAt        DateTime @default(now())
+  idempotencyKey    String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, answeredAt(sort: Desc)])
+  @@index([questionId])
+}

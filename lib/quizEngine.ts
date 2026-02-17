@@ -1,9 +1,10 @@
-import { questions } from "@/lib/questions";
-import { cacheKeys, redis } from "@/lib/cache";
-import { AnswerLog, Difficulty, LeaderboardEntry, Question, UserState } from "@/lib/types";
+import { createHash } from "node:crypto";
+import { db } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
+import { questions as seedQuestions } from "@/lib/questions";
 
-const MIN_DIFFICULTY: Difficulty = 1;
-const MAX_DIFFICULTY: Difficulty = 10;
+const MIN_DIFFICULTY = 1;
+const MAX_DIFFICULTY = 10;
 const STREAK_MULTIPLIER_CAP = 3;
 const STREAK_STEP = 0.15;
 const DECAY_WINDOW_MS = 1000 * 60 * 5;
@@ -12,144 +13,103 @@ const ROLLING_WINDOW = 5;
 const HYSTERESIS_UP = 1.2;
 const HYSTERESIS_DOWN = -1.2;
 
-const users = new Map<string, UserState>();
-const answerLogs = new Map<string, AnswerLog>();
-const scoreBoard = new Map<string, LeaderboardEntry>();
-const locks = new Map<string, Promise<void>>();
-
 const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
-
-const toDifficulty = (n: number): Difficulty => clamp(n, MIN_DIFFICULTY, MAX_DIFFICULTY) as Difficulty;
-
-export const getOrCreateUserState = async (userId: string): Promise<UserState> => {
-  if (users.has(userId)) return users.get(userId)!;
-
-  if (redis) {
-    const cached = await redis.get(cacheKeys.userState(userId));
-    if (cached) {
-      const parsed = JSON.parse(cached) as UserState;
-      users.set(userId, parsed);
-      return parsed;
-    }
-  }
-
-  const initial: UserState = {
-    userId,
-    currentDifficulty: 3,
-    streak: 0,
-    maxStreak: 0,
-    totalScore: 0,
-    answeredCount: 0,
-    correctCount: 0,
-    stateVersion: 1,
-    confidence: 0,
-    rolling: []
-  };
-
-  users.set(userId, initial);
-  return initial;
-};
-
-export const getQuestionForDifficulty = async (difficulty: Difficulty, lastQuestionId?: string): Promise<Question> => {
-  const key = cacheKeys.questionPool(difficulty);
-  let pool: Question[] = [];
-
-  if (redis) {
-    const cached = await redis.get(key);
-    if (cached) {
-      pool = JSON.parse(cached) as Question[];
-    }
-  }
-
-  if (pool.length === 0) {
-    pool = questions.filter((q) => q.difficulty === difficulty);
-    if (redis && pool.length > 0) {
-      await redis.set(key, JSON.stringify(pool), "EX", 3600);
-    }
-  }
-
-  const filtered = pool.filter((q) => q.id !== lastQuestionId);
-  const source = filtered.length > 0 ? filtered : pool;
-  return source[Math.floor(Math.random() * source.length)];
-};
-
+const hashAnswer = (answer: string) => createHash("sha256").update(answer).digest("hex");
 const streakMultiplier = (streak: number) => clamp(1 + streak * STREAK_STEP, 1, STREAK_MULTIPLIER_CAP);
 
-const decayStreak = (state: UserState, now: number) => {
-  if (!state.lastAnswerAt) return;
-  const idleWindows = Math.floor((now - state.lastAnswerAt) / DECAY_WINDOW_MS);
-  if (idleWindows > 0) {
-    state.streak = Math.max(0, state.streak - idleWindows);
-  }
+let seeded = false;
+export const ensureSeededQuestions = async () => {
+  if (seeded) return;
+  await db.question.createMany({
+    data: seedQuestions.map((q) => ({
+      id: q.id,
+      difficulty: q.difficulty,
+      prompt: q.prompt,
+      choices: q.choices,
+      correctAnswerHash: q.correctAnswerHash,
+      tags: q.tags
+    })),
+    skipDuplicates: true
+  });
+  seeded = true;
 };
 
-const updateDifficulty = (state: UserState, correct: boolean): Difficulty => {
+const decayStreak = (streak: number, lastAnswerAt: Date | null) => {
+  if (!lastAnswerAt) return streak;
+  const idleWindows = Math.floor((Date.now() - lastAnswerAt.getTime()) / DECAY_WINDOW_MS);
+  if (idleWindows <= 0) return streak;
+  return Math.max(0, streak - idleWindows);
+};
+
+const updateDifficulty = (state: { currentDifficulty: number; confidence: number; rolling: boolean[] }, correct: boolean) => {
   const impulse = correct ? 1 : -1;
-  state.confidence = clamp(state.confidence * 0.7 + impulse, -3, 3);
+  let confidence = clamp(state.confidence * 0.7 + impulse, -3, 3);
 
-  state.rolling.push(correct);
-  if (state.rolling.length > ROLLING_WINDOW) state.rolling.shift();
-  const rollingScore = state.rolling.reduce((acc, curr) => acc + (curr ? 1 : -1), 0) / state.rolling.length;
-  const signal = state.confidence + rollingScore;
+  const rolling = [...state.rolling, correct].slice(-ROLLING_WINDOW);
+  const rollingScore = rolling.reduce((acc, curr) => acc + (curr ? 1 : -1), 0) / rolling.length;
+  const signal = confidence + rollingScore;
 
+  let currentDifficulty = state.currentDifficulty;
   if (signal >= HYSTERESIS_UP) {
-    state.currentDifficulty = toDifficulty(state.currentDifficulty + 1);
-    state.confidence = 0;
+    currentDifficulty = clamp(currentDifficulty + 1, MIN_DIFFICULTY, MAX_DIFFICULTY);
+    confidence = 0;
   } else if (signal <= HYSTERESIS_DOWN) {
-    state.currentDifficulty = toDifficulty(state.currentDifficulty - 1);
-    state.confidence = 0;
+    currentDifficulty = clamp(currentDifficulty - 1, MIN_DIFFICULTY, MAX_DIFFICULTY);
+    confidence = 0;
   }
 
-  return state.currentDifficulty;
+  return { currentDifficulty, confidence, rolling };
 };
 
-const calcScoreDelta = (difficulty: Difficulty, correct: boolean, accuracy: number, streak: number) => {
+const calcScoreDelta = (difficulty: number, correct: boolean, accuracy: number, streak: number) => {
   if (!correct) return -Math.round(difficulty * 1.5);
   const difficultyWeight = 1 + difficulty / 10;
   const accuracyWeight = 0.7 + accuracy;
   return Math.round(BASE_POINTS * difficultyWeight * accuracyWeight * streakMultiplier(streak));
 };
 
-const rankBy = (entries: LeaderboardEntry[], field: "totalScore" | "streak") =>
-  entries.sort((a, b) => b[field] - a[field] || a.updatedAt - b.updatedAt);
-
-const persistState = async (state: UserState) => {
-  users.set(state.userId, state);
-  if (redis) {
-    await redis.set(cacheKeys.userState(state.userId), JSON.stringify(state), "EX", 3600);
-  }
-};
-
-const withUserLock = async <T>(userId: string, fn: () => Promise<T>): Promise<T> => {
-  const prev = locks.get(userId) ?? Promise.resolve();
-  let release: () => void = () => {};
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
+export const getOrCreateUserState = async (userId: string) => {
+  await ensureSeededQuestions();
+  const existing = await db.userState.findUnique({ where: { userId } });
+  if (existing) return existing;
+  return db.userState.create({
+    data: {
+      userId,
+      currentDifficulty: 3,
+      streak: 0,
+      maxStreak: 0,
+      totalScore: 0,
+      answeredCount: 0,
+      correctCount: 0,
+      stateVersion: 1,
+      confidence: 0,
+      rolling: []
+    }
   });
-  locks.set(userId, prev.then(() => current));
-  await prev;
-  try {
-    return await fn();
-  } finally {
-    release();
-    if (locks.get(userId) === current) locks.delete(userId);
-  }
 };
 
 export const nextQuestion = async (userId: string) => {
-  const state = await getOrCreateUserState(userId);
-  decayStreak(state, Date.now());
-  const question = await getQuestionForDifficulty(state.currentDifficulty, state.lastQuestionId);
-  await persistState(state);
+  await ensureSeededQuestions();
+  const current = await getOrCreateUserState(userId);
+  const streak = decayStreak(current.streak, current.lastAnswerAt);
+  if (streak !== current.streak) {
+    await db.userState.update({ where: { userId }, data: { streak } });
+  }
+
+  const pool = await db.question.findMany({ where: { difficulty: current.currentDifficulty } });
+  const filtered = pool.filter((q) => q.id !== current.lastQuestionId);
+  const source = filtered.length > 0 ? filtered : pool;
+  const question = source[Math.floor(Math.random() * source.length)];
+
   return {
     questionId: question.id,
     difficulty: question.difficulty,
     prompt: question.prompt,
-    choices: question.choices,
-    currentScore: state.totalScore,
-    currentStreak: state.streak,
+    choices: question.choices as string[],
+    currentScore: current.totalScore,
+    currentStreak: streak,
     sessionId: `session-${userId}`,
-    stateVersion: state.stateVersion
+    stateVersion: current.stateVersion
   };
 };
 
@@ -161,10 +121,16 @@ export const submitAnswer = async (input: {
   stateVersion: number;
   answerIdempotencyKey: string;
 }) => {
-  return withUserLock(input.userId, async () => {
-    if (answerLogs.has(input.answerIdempotencyKey)) {
-      const existing = answerLogs.get(input.answerIdempotencyKey)!;
-      const state = await getOrCreateUserState(input.userId);
+  await ensureSeededQuestions();
+  return db.$transaction(async (tx) => {
+    const existing = await tx.answerLog.findUnique({
+      where: { userId_idempotencyKey: { userId: input.userId, idempotencyKey: input.answerIdempotencyKey } }
+    });
+
+    const state = await tx.userState.findUnique({ where: { userId: input.userId } });
+    if (!state) return { error: "STATE_NOT_FOUND" as const };
+
+    if (existing) {
       return {
         correct: existing.correct,
         newDifficulty: state.currentDifficulty,
@@ -172,86 +138,101 @@ export const submitAnswer = async (input: {
         scoreDelta: 0,
         totalScore: state.totalScore,
         stateVersion: state.stateVersion,
-        leaderboardRankScore: getRank(input.userId, "totalScore"),
-        leaderboardRankStreak: getRank(input.userId, "streak"),
+        leaderboardRankScore: await getRankTx(tx, input.userId, "score"),
+        leaderboardRankStreak: await getRankTx(tx, input.userId, "streak"),
         idempotentReplay: true
       };
     }
 
-    const state = await getOrCreateUserState(input.userId);
     if (input.stateVersion !== state.stateVersion) {
-      return {
-        error: "STATE_VERSION_CONFLICT",
-        expected: state.stateVersion
-      };
+      return { error: "STATE_VERSION_CONFLICT" as const, expected: state.stateVersion };
     }
 
-    decayStreak(state, Date.now());
-    const question = questions.find((q) => q.id === input.questionId);
-    if (!question) return { error: "QUESTION_NOT_FOUND" };
+    const question = await tx.question.findUnique({ where: { id: input.questionId } });
+    if (!question) return { error: "QUESTION_NOT_FOUND" as const };
 
-    const correct = question.correctAnswer === input.answer;
-    state.answeredCount += 1;
-    if (correct) {
-      state.correctCount += 1;
-      state.streak += 1;
-      state.maxStreak = Math.max(state.maxStreak, state.streak);
-    } else {
-      state.streak = 0;
-    }
+    const decayedStreak = decayStreak(state.streak, state.lastAnswerAt);
+    const correct = question.correctAnswerHash === hashAnswer(input.answer);
+    const answeredCount = state.answeredCount + 1;
+    const correctCount = state.correctCount + (correct ? 1 : 0);
+    const streak = correct ? decayedStreak + 1 : 0;
+    const maxStreak = Math.max(state.maxStreak, streak);
+    const accuracy = correctCount / Math.max(1, answeredCount);
+    const scoreDelta = calcScoreDelta(question.difficulty, correct, accuracy, streak);
+    const totalScore = Math.max(0, state.totalScore + scoreDelta);
 
-    const accuracy = state.correctCount / Math.max(1, state.answeredCount);
-    const scoreDelta = calcScoreDelta(question.difficulty, correct, accuracy, state.streak);
-    state.totalScore = Math.max(0, state.totalScore + scoreDelta);
-    state.currentDifficulty = updateDifficulty(state, correct);
-    state.stateVersion += 1;
-    state.lastAnswerAt = Date.now();
-    state.lastQuestionId = question.id;
+    const diffUpdate = updateDifficulty(
+      {
+        currentDifficulty: state.currentDifficulty,
+        confidence: state.confidence,
+        rolling: state.rolling
+      },
+      correct
+    );
 
-    const log: AnswerLog = {
-      id: `${input.userId}-${state.stateVersion}`,
-      userId: input.userId,
-      questionId: question.id,
-      difficulty: question.difficulty,
-      answer: input.answer,
-      correct,
-      scoreDelta,
-      streakAtAnswer: state.streak,
-      answeredAt: state.lastAnswerAt,
-      idempotencyKey: input.answerIdempotencyKey
-    };
-    answerLogs.set(input.answerIdempotencyKey, log);
-
-    scoreBoard.set(input.userId, {
-      userId: input.userId,
-      totalScore: state.totalScore,
-      streak: state.streak,
-      maxStreak: state.maxStreak,
-      updatedAt: Date.now()
+    const updatedState = await tx.userState.update({
+      where: { userId: input.userId },
+      data: {
+        currentDifficulty: diffUpdate.currentDifficulty,
+        confidence: diffUpdate.confidence,
+        rolling: diffUpdate.rolling,
+        streak,
+        maxStreak,
+        totalScore,
+        answeredCount,
+        correctCount,
+        stateVersion: { increment: 1 },
+        lastAnswerAt: new Date(),
+        lastQuestionId: question.id
+      }
     });
 
-    await persistState(state);
+    await tx.answerLog.create({
+      data: {
+        userId: input.userId,
+        questionId: question.id,
+        difficulty: question.difficulty,
+        answer: input.answer,
+        correct,
+        scoreDelta,
+        streakAtAnswer: streak,
+        idempotencyKey: input.answerIdempotencyKey
+      }
+    });
 
     return {
       correct,
-      newDifficulty: state.currentDifficulty,
-      newStreak: state.streak,
+      newDifficulty: updatedState.currentDifficulty,
+      newStreak: updatedState.streak,
       scoreDelta,
-      totalScore: state.totalScore,
-      stateVersion: state.stateVersion,
-      leaderboardRankScore: getRank(input.userId, "totalScore"),
-      leaderboardRankStreak: getRank(input.userId, "streak")
+      totalScore: updatedState.totalScore,
+      stateVersion: updatedState.stateVersion,
+      leaderboardRankScore: await getRankTx(tx, input.userId, "score"),
+      leaderboardRankStreak: await getRankTx(tx, input.userId, "streak")
     };
   });
 };
 
+const getRankTx = async (tx: Prisma.TransactionClient | typeof db, userId: string, mode: "score" | "streak") => {
+  const target = await tx.userState.findUnique({ where: { userId } });
+  if (!target) return null;
+  const count =
+    mode === "score"
+      ? await tx.userState.count({ where: { totalScore: { gt: target.totalScore } } })
+      : await tx.userState.count({ where: { maxStreak: { gt: target.maxStreak } } });
+  return count + 1;
+};
+
 export const getMetrics = async (userId: string) => {
+  await ensureSeededQuestions();
   const state = await getOrCreateUserState(userId);
   const recentPerformance = state.rolling.map((item) => (item ? 1 : 0));
+  const questions = await db.question.findMany({ select: { difficulty: true } });
   const difficultyHistogram = questions.reduce<Record<number, number>>((acc, q) => {
     acc[q.difficulty] = (acc[q.difficulty] ?? 0) + 1;
     return acc;
   }, {});
+
   return {
     currentDifficulty: state.currentDifficulty,
     streak: state.streak,
@@ -263,16 +244,18 @@ export const getMetrics = async (userId: string) => {
   };
 };
 
-export const topScoreLeaderboard = () => rankBy(Array.from(scoreBoard.values()), "totalScore").slice(0, 10);
+export const topScoreLeaderboard = async () =>
+  db.userState.findMany({
+    orderBy: [{ totalScore: "desc" }, { user: { createdAt: "asc" } }],
+    take: 10,
+    select: { userId: true, totalScore: true, user: { select: { displayName: true } } }
+  });
 
-export const topStreakLeaderboard = () =>
-  Array.from(scoreBoard.values())
-    .sort((a, b) => b.maxStreak - a.maxStreak || a.updatedAt - b.updatedAt)
-    .slice(0, 10)
-    .map((entry) => ({ userId: entry.userId, maxStreak: entry.maxStreak, updatedAt: entry.updatedAt }));
+export const topStreakLeaderboard = async () =>
+  db.userState.findMany({
+    orderBy: [{ maxStreak: "desc" }, { user: { createdAt: "asc" } }],
+    take: 10,
+    select: { userId: true, maxStreak: true, user: { select: { displayName: true } } }
+  });
 
-export const getRank = (userId: string, mode: "totalScore" | "streak") => {
-  const sorted = rankBy(Array.from(scoreBoard.values()), mode);
-  const idx = sorted.findIndex((entry) => entry.userId === userId);
-  return idx >= 0 ? idx + 1 : null;
-};
+export const getRank = async (userId: string, mode: "score" | "streak") => getRankTx(db, userId, mode);
