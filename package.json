@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
+    "dev": "node ./node_modules/next/dist/bin/next dev",
+    "build": "node ./node_modules/next/dist/bin/next build",
+    "start": "node ./node_modules/next/dist/bin/next start",
+    "lint": "node ./node_modules/next/dist/bin/next lint",
     "typecheck": "tsc --noEmit",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
@@ -19,7 +19,8 @@
     "next": "14.2.5",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "prisma": "^5.19.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -28,7 +29,6 @@
     "@types/react-dom": "18.3.0",
     "eslint": "8.57.0",
     "eslint-config-next": "14.2.5",
-    "prisma": "^5.19.1",
     "typescript": "5.5.3"
   }
 }

@@ -43,6 +43,9 @@ docker compose up
 
 If you see `the attribute version is obsolete`, this is harmless in Compose v2 and is already removed from this repo.
 
+
+If you see `sh: next: not found` during Docker build, it usually means npm binary links were not created in that environment. The package scripts now call Next.js via `node ./node_modules/next/dist/bin/next ...` to avoid that path issue.
+
 ## Local dev without Docker
 1. Start Postgres + Redis locally.
 2. Create `.env.local`:
