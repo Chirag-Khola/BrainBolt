@@ -4,7 +4,7 @@ BrainBolt is a Next.js + TypeScript quiz platform with adaptive difficulty, auth
 
 ## One-command run (full stack)
 ```bash
-docker compose up --build
+npm run dev:stack
 ```
 
 Open `http://localhost:3000`.
